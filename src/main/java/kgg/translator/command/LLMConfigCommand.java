@@ -1,6 +1,7 @@
 package kgg.translator.command;
 
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
@@ -35,7 +36,9 @@ public class LLMConfigCommand {
                     .then(ClientCommandManager.argument("url", StringArgumentType.string())
                         .then(ClientCommandManager.argument("model", StringArgumentType.string())
                             .then(ClientCommandManager.argument("apikey", StringArgumentType.string())
-                                .executes(LLMConfigCommand::addModel))))))
+                                .executes(LLMConfigCommand::addModel)
+                                .then(ClientCommandManager.argument("qps", IntegerArgumentType.integer(1, 100))
+                                    .executes(LLMConfigCommand::addModelWithQPS)))))))
             .then(ClientCommandManager.literal("remove")
                 .then(ClientCommandManager.argument("name", LLMModelArgumentType.llmModel())
                     .executes(LLMConfigCommand::removeModel)))
@@ -49,7 +52,10 @@ public class LLMConfigCommand {
                             .executes(ctx -> editModel(ctx, "model"))))
                     .then(ClientCommandManager.literal("apikey")
                         .then(ClientCommandManager.argument("value", StringArgumentType.string())
-                            .executes(ctx -> editModel(ctx, "apikey"))))))
+                            .executes(ctx -> editModel(ctx, "apikey"))))
+                    .then(ClientCommandManager.literal("qps")
+                        .then(ClientCommandManager.argument("value", IntegerArgumentType.integer(1, 100))
+                            .executes(ctx -> editModelQPS(ctx))))))
             .then(ClientCommandManager.literal("use")
                 .then(ClientCommandManager.argument("name", LLMModelArgumentType.llmModel())
                     .executes(LLMConfigCommand::useModel)))
@@ -90,7 +96,9 @@ public class LLMConfigCommand {
                 .append(Text.literal(model.model).formatted(Formatting.WHITE))
                 .append(Text.literal("\n  API Key: ").formatted(Formatting.GRAY))
                 .append(Text.literal(model.apiKey.isEmpty() ? "[未设置]" : "[已设置]")
-                    .formatted(model.apiKey.isEmpty() ? Formatting.RED : Formatting.GREEN));
+                    .formatted(model.apiKey.isEmpty() ? Formatting.RED : Formatting.GREEN))
+                .append(Text.literal("\n  QPS: ").formatted(Formatting.GRAY))
+                .append(Text.literal(String.valueOf(model.qps)).formatted(Formatting.AQUA));
             
             Text modelText = Text.literal("- " + model.name)
                 .formatted(isCurrentModel ? Formatting.GOLD : Formatting.YELLOW)
@@ -117,6 +125,31 @@ public class LLMConfigCommand {
         
         context.getSource().sendFeedback(
             Text.literal("成功添加LLM模型: " + name).formatted(Formatting.GREEN)
+        );
+        
+        context.getSource().sendFeedback(
+            Text.literal("使用 ").formatted(Formatting.GRAY)
+                .append(Text.literal("/llm use " + name).formatted(Formatting.AQUA)
+                    .setStyle(Style.EMPTY.withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/llm use " + name))))
+                .append(Text.literal(" 切换到此模型").formatted(Formatting.GRAY))
+        );
+        
+        return 1;
+    }
+    
+    private static int addModelWithQPS(CommandContext<FabricClientCommandSource> context) {
+        String name = StringArgumentType.getString(context, "name");
+        String url = StringArgumentType.getString(context, "url");
+        String model = StringArgumentType.getString(context, "model");
+        String apiKey = StringArgumentType.getString(context, "apikey");
+        int qps = IntegerArgumentType.getInteger(context, "qps");
+        
+        LLMManager.Model newModel = new LLMManager.Model(name, url, model, apiKey, qps);
+        LLMManager.addModel(newModel);
+        TranslatorConfig.writeFile();
+        
+        context.getSource().sendFeedback(
+            Text.literal("成功添加LLM模型: " + name + " (QPS: " + qps + ")").formatted(Formatting.GREEN)
         );
         
         context.getSource().sendFeedback(
@@ -179,6 +212,29 @@ public class LLMConfigCommand {
         return 1;
     }
     
+    private static int editModelQPS(CommandContext<FabricClientCommandSource> context) {
+        String name = LLMModelArgumentType.getLLMModel(context, "name");
+        int qps = IntegerArgumentType.getInteger(context, "value");
+        
+        LLMManager.Model model = LLMManager.getModels().get(name);
+        if (model == null) {
+            context.getSource().sendError(Text.literal("未找到模型: " + name));
+            return 0;
+        }
+        
+        model.qps = qps;
+        
+        // 重新添加以更新翻译器
+        LLMManager.addModel(model);
+        TranslatorConfig.writeFile();
+        
+        context.getSource().sendFeedback(
+            Text.literal("成功更新 " + name + " 的 QPS 为: " + qps).formatted(Formatting.GREEN)
+        );
+        
+        return 1;
+    }
+    
     private static int useModel(CommandContext<FabricClientCommandSource> context) {
         String name = LLMModelArgumentType.getLLMModel(context, "name");
         
@@ -210,11 +266,12 @@ public class LLMConfigCommand {
         context.getSource().sendFeedback(Text.literal("内置LLM模型模板:").formatted(Formatting.GREEN));
         
         for (LLMManager.Model model : LLMManager.geBuiltInModels()) {
-            String addCommand = String.format("/llm add %s \"%s\" \"%s\" YOUR_API_KEY", 
-                model.name.replace(" ", "_"), model.url, model.model);
+            String addCommand = String.format("/llm add %s \"%s\" \"%s\" YOUR_API_KEY %d", 
+                model.name.replace(" ", "_"), model.url, model.model, model.qps);
             
             Text detailsText = Text.literal("URL: " + model.url + "\n")
                 .append("Model: " + model.model + "\n")
+                .append("QPS: " + model.qps + "\n")
                 .append("点击后需要替换 YOUR_API_KEY 为实际的API密钥");
             
             Text modelText = Text.literal("- " + model.name).formatted(Formatting.YELLOW)
